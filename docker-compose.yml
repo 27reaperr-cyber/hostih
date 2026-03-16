@@ -1,0 +1,84 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  MC Hosting — docker-compose
+#
+#  Сервисы:
+#    postgres  — база данных
+#    api       — FastAPI для управления серверами (порт 8000)
+#    bot       — Telegram-бот (polling)
+#
+#  Minecraft-серверы создаются динамически через Docker SDK.
+#  Для этого /var/run/docker.sock монтируется в api и bot.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER:-mc_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mc_pass}
+      POSTGRES_DB:       ${POSTGRES_DB:-mc_hosting}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mc_user}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── FastAPI (внутренний API) ─────────────────────────────────────────────────
+  api:
+    build: .
+    command: python api.py
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL:      postgresql://${POSTGRES_USER:-mc_user}:${POSTGRES_PASSWORD:-mc_pass}@postgres:5432/${POSTGRES_DB:-mc_hosting}
+      API_SECRET_TOKEN:  ${API_SECRET_TOKEN:-change_me_please}
+      DOCKER_NETWORK:    ${DOCKER_NETWORK:-minecraft_net}
+    volumes:
+      # Пробрасываем Docker-сокет для управления Minecraft-контейнерами
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "8000:8000"
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Telegram Bot ─────────────────────────────────────────────────────────────
+  bot:
+    build: .
+    command: python bot.py
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      BOT_TOKEN:         ${BOT_TOKEN}
+      API_BASE_URL:      http://api:8000
+      API_SECRET_TOKEN:  ${API_SECRET_TOKEN:-change_me_please}
+    networks:
+      - backend
+
+volumes:
+  postgres_data:
+
+networks:
+  # Внутренняя сеть для бота, API и БД
+  backend:
+    driver: bridge
+
+  # Сеть для Minecraft-контейнеров — создаётся автоматически при старте API
+  # (или вручную: docker network create minecraft_net)
