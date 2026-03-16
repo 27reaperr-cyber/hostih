@@ -2,19 +2,10 @@ version: "3.9"
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  MC Hosting — docker-compose
-#
-#  Сервисы:
-#    postgres  — база данных
-#    api       — FastAPI для управления серверами (порт 8000)
-#    bot       — Telegram-бот (polling)
-#
-#  Minecraft-серверы создаются динамически через Docker SDK.
-#  Для этого /var/run/docker.sock монтируется в api и bot.
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
 
-  # ── PostgreSQL ──────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -25,14 +16,13 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
-      - backend
+      - mc_backend
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mc_user}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  # ── FastAPI (внутренний API) ─────────────────────────────────────────────────
   api:
     build: .
     command: python api.py
@@ -45,19 +35,19 @@ services:
       API_SECRET_TOKEN:  ${API_SECRET_TOKEN:-change_me_please}
       DOCKER_NETWORK:    ${DOCKER_NETWORK:-minecraft_net}
     volumes:
-      # Пробрасываем Docker-сокет для управления Minecraft-контейнерами
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8000:8000"
     networks:
-      - backend
+      - mc_backend
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      # wget встроен в python:slim — curl там нет
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/health || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 15s
 
-  # ── Telegram Bot ─────────────────────────────────────────────────────────────
   bot:
     build: .
     command: python bot.py
@@ -70,15 +60,13 @@ services:
       API_BASE_URL:      http://api:8000
       API_SECRET_TOKEN:  ${API_SECRET_TOKEN:-change_me_please}
     networks:
-      - backend
+      - mc_backend
 
 volumes:
   postgres_data:
 
 networks:
-  # Внутренняя сеть для бота, API и БД
-  backend:
+  # name: явно задаём, иначе Compose добавит префикс папки → hostname не найдётся
+  mc_backend:
+    name: mc_backend
     driver: bridge
-
-  # Сеть для Minecraft-контейнеров — создаётся автоматически при старте API
-  # (или вручную: docker network create minecraft_net)
